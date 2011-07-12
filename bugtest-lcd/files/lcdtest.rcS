@@ -1,0 +1,194 @@
+#!/bin/sh
+
+# comment_block() {
+#   ---------------------------------------------
+#   Common settings
+#   ---------------------------------------------
+HOSTNAME=VIDEO-TEST
+VERSION=1.0
+
+hostname $HOSTNAME
+
+#   ---------------------------------------------
+#   Prints execution status.
+#
+#   arg1 : Execution status
+#   arg2 : Continue (0) or Abort (1) on error
+#   ---------------------------------------------
+status ()
+{
+	if [ $1 -eq 0 ] ; then
+		echo "[SUCCESS]"
+	else
+		echo "[FAILED]"
+
+		if [ $2 -eq 1 ] ; then
+			echo "... System init aborted."
+			exit 1
+		fi
+	fi
+
+}
+
+#   ---------------------------------------------
+#   Get verbose
+#   ---------------------------------------------
+echo ""
+echo "    System initialization..."
+echo ""
+echo "    Hostname       : $HOSTNAME"
+echo "    Filesystem     : v$VERSION"
+echo ""
+echo "    Kernel release : `uname -s` `uname -r`"
+echo "    Kernel version : `uname -v`"
+echo ""
+
+
+#   ---------------------------------------------
+#   MDEV Support
+#   (Requires sysfs support in the kernel)
+#   ---------------------------------------------
+echo -n " Mounting /proc             : "
+mount -n -t proc /proc /proc
+status $? 1
+
+echo -n " Mounting /sys              : "
+mount -n -t sysfs sysfs /sys
+status $? 1
+
+echo -n " Mounting /dev              : "
+mount -n -t tmpfs mdev /dev
+status $? 1
+
+echo -n " Mounting /dev/pts          : "
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts
+status $? 1
+
+echo -n " Enabling hot-plug          : "
+echo "/sbin/mdev" > /proc/sys/kernel/hotplug
+status $? 0
+
+echo -n " Populating /dev            : "
+#mkdir -p /dev/input
+#mkdir -p /dev/snd
+#mkdir -p /dev/shm
+/etc/init.d/udev start
+mdev -s
+status $? 0
+
+
+#   ---------------------------------------------
+#   Mount the default file systems
+#   ---------------------------------------------
+echo -n " Mounting other filesystems : "
+mount -a
+status $? 0
+umount /media/mm*
+
+#   ---------------------------------------------
+#   Set PATH
+#   ---------------------------------------------
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
+
+# end comment block}
+
+#   ---------------------------------------------
+#   Done!
+#   ---------------------------------------------
+echo ""
+echo "System initialization complete."
+
+#mount -t vfat /dev/mmcblk0p1 /mnt/mmc1
+#mount -t vfat /dev/mmcblk1p1 /mnt/mmc2
+
+#echo "----------------------------------------"
+#echo "    Making device nodes for EEPROMs"
+#mknod /dev/at24c_eeprom c 249 0
+#mknod /dev/at25_eeprom c 250 0
+#echo "----------------------------------------"
+#echo "          Disabling FB Timeout."
+#echo "----------------------------------------"
+#echo 0 > /sys/devices/platform/omapfb/sleep_timeout
+
+
+prompt()
+{
+	tvar=L
+	while [ "$tvar" != "y" ] &&
+		[ "$tvar" != "Y" ] &&
+		[ "$tvar" != "n" ] &&
+		[ "$tvar" != "N" ] &&
+		[ "$tvar" != "r" ] &&
+		[ "$tvar" != "R" ]; do
+
+	read -n1 tvar
+
+done
+export $1=$tvar
+}
+# main while loop
+
+# required so ts_calibrate et al work
+export TSLIB_TSDEVICE=/dev/input/touchscreen0
+
+
+echo 255 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+while [ 1 ]
+do
+	slot=1
+	echo ============================================================
+	echo Place the next LCD into the slot for programming 
+	echo ============================================================
+	# wait for them to insert the module
+	while [ 1 ]
+	do
+		if [ ! -e /sys/class/bmi/bmi-${slot}/bmi-dev-${slot} ];  then
+			sleep 1;
+			dmesg | grep "timeout waiting for bus ready"
+			rc=$?
+			if [ "$rc" == "0" ]; then
+				echo 0 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+				echo 255 > "/sys/class/leds/omap3bug:red:battery/brightness"
+				echo heartbeat > "/sys/class/leds/omap3bug:red:battery/trigger"
+				echo rebooting because of I2C bus failure mode
+				echo software issue, meh.
+				reboot
+			fi
+		else
+			echo 0 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+			break;
+		fi
+	done
+
+	echo ===========================================================
+	echo Running FB random pattern
+	echo ===========================================================
+	for la in red blue green ; do 
+		cp /usr/images/${la}.fb /dev/fb0; 
+		sleep 2
+	done
+	cp /usr/images/colorbars.fb /dev/fb0
+	sleep 3
+	# Run calibration test
+	ts_calibrate
+	ts_test &
+	echo ============================================================
+	echo LCD Test done, please remove the LCD module
+	echo ============================================================
+	# wait for them to pull the module
+	echo 255 > "/sys/class/leds/omap3bug:red:wifi/brightness"
+	while [ 1 ]
+	do
+		if [ -e /sys/class/bmi/bmi-${slot}/bmi-dev-${slot} ];  then
+			sleep 1;
+		else
+			killall ts_test
+			cp /usr/images/colorbars.fb /dev/fb0
+			echo 0 > "/sys/class/leds/omap3bug:red:wifi/brightness"
+			echo 255 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+			break;
+		fi
+	done
+done
+

@@ -1,0 +1,12 @@
+
+[Desktop Entry]
+Version=1.0
+Type=Application
+Terminal=false
+Icon[en_US]=gnome-panel-launcher
+Name[en_US]=OTG Test Host Process
+Exec=gnome-terminal --title "OTG Test Host Process" -x bash /home/buglabs/otgmountwatch
+Comment[en_US]=meh.
+Name=OTG Test Host Process
+Comment=meh.
+Icon=gnome-panel-launcher

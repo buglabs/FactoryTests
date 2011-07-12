@@ -1,0 +1,232 @@
+#!/bin/sh
+
+# comment_block() {
+#   ---------------------------------------------
+#   Common settings
+#   ---------------------------------------------
+HOSTNAME=BUGBASE
+VERSION=1.0
+
+hostname $HOSTNAME
+
+#   ---------------------------------------------
+#   Prints execution status.
+#
+#   arg1 : Execution status
+#   arg2 : Continue (0) or Abort (1) on error
+#   ---------------------------------------------
+status ()
+{
+	if [ $1 -eq 0 ] ; then
+		echo "[SUCCESS]"
+	else
+		echo "[FAILED]"
+	
+		if [ $2 -eq 1 ] ; then
+			echo "... System init aborted."
+			exit 1
+		fi
+	fi
+
+}
+
+#   ---------------------------------------------
+#   Get verbose
+#   ---------------------------------------------
+echo ""
+echo "    System initialization..."
+echo ""
+echo "    Hostname       : $HOSTNAME"
+echo "    Filesystem     : v$VERSION"
+echo ""
+echo "    Kernel release : `uname -s` `uname -r`"
+echo "    Kernel version : `uname -v`"
+echo ""
+
+
+#   ---------------------------------------------
+#   MDEV Support
+#   (Requires sysfs support in the kernel)
+#   ---------------------------------------------
+echo -n " Mounting /proc             : "
+mount -n -t proc /proc /proc
+status $? 1
+
+echo -n " Mounting /sys              : "
+mount -n -t sysfs sysfs /sys
+status $? 1
+
+echo -n " Mounting /dev              : "
+mount -n -t tmpfs mdev /dev
+status $? 1
+
+echo -n " Mounting /dev/pts          : "
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts
+status $? 1
+
+echo -n " Enabling hot-plug          : "
+echo "/sbin/mdev" > /proc/sys/kernel/hotplug
+status $? 0
+
+echo -n " Populating /dev            : "
+#mkdir -p /dev/input
+#mkdir -p /dev/snd
+#mkdir -p /dev/shm
+/etc/init.d/udev start
+mdev -s
+status $? 0
+
+
+#   ---------------------------------------------
+#   Mount the default file systems
+#   ---------------------------------------------
+echo -n " Mounting other filesystems : "
+mount -a
+status $? 0
+umount /media/mm*
+
+#   ---------------------------------------------
+#   Set PATH
+#   ---------------------------------------------
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
+
+# end comment block}
+
+#   ---------------------------------------------
+#   Done!
+#   ---------------------------------------------
+echo ""
+echo "System initialization complete."
+
+#mount -t vfat /dev/mmcblk0p1 /mnt/mmc1
+#mount -t vfat /dev/mmcblk1p1 /mnt/mmc2
+
+#echo "----------------------------------------"
+#echo "    Making device nodes for EEPROMs"
+#mknod /dev/at24c_eeprom c 249 0
+#mknod /dev/at25_eeprom c 250 0
+#echo "----------------------------------------"
+#echo "          Disabling FB Timeout."
+#echo "----------------------------------------"
+#echo 0 > /sys/devices/platform/omapfb/sleep_timeout
+
+error_collect() {
+
+	while [ 1 ]; do
+		echo heartbeat > "/sys/class/leds/omap3bug:blue:power/trigger"
+
+		# Wait for user input before trying to write
+		exec 6< /dev/input/event0
+		cat <&6 | read -n1
+		exec 6>&-
+
+		if [ ! -b /dev/mmcblk1p1 ]; then
+			# yell at them
+			for la in /sys/class/leds/*; do
+				echo heartbeat > $la/trigger
+				sleep .03
+			done
+			sleep 4
+			for la in /sys/class/leds/*; do
+				echo none > $la/trigger
+			done
+			continue
+		else
+			echo breathe > "/sys/class/leds/omap3bug:blue:power/trigger"
+			mountpoint /media/mmcblk1p1
+			if [ "$?" -ne "0" ]; then
+				mkdir -p /media/mmcblk1p1
+				mount /dev/mmcblk1p1 /media/mmcblk1p1
+			fi
+			cp memtest.errlog /media/mmcblk1p1/
+			umount /media/mmcblk1*
+			shutdown -h now
+			sleep 900
+		fi
+
+
+	done
+
+}
+# Run the memory test here
+#*********************************************
+# Turn off those lights!
+if [ -e /sys/class/leds ]; then 
+	cd /sys/class/leds
+	for la in *
+	do
+		echo none > $la/trigger
+		echo 0 > $la/brightness
+	done
+fi
+
+cd /home/root
+#echo give me a shell
+#/bin/ash
+#Turn on the Bluetooth lamp
+
+echo 255 > "/sys/class/leds/omap3bug:blue:wifi/brightness"
+/usr/bin/bqupdate 2 /Bug20_0500_0120_GOLDEN.dfi >> memtest.errlog 2>&1
+if [ "$?" != "0" ]; then
+	echo 0 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+	echo 0 > "/sys/class/leds/omap3bug:blue:wifi/brightness"
+	echo heartbeat > "/sys/class/leds/omap3bug:blue:wifi/trigger"
+	echo heartbeat > "/sys/class/leds/omap3bug:blue:battery/trigger"
+	error_collect
+
+fi
+echo breathe > "/sys/class/leds/omap3bug:blue:power/trigger"
+# Start the Nand testing
+echo 255 > "/sys/class/leds/omap3bug:green:battery/brightness" 
+echo 0 > "/sys/class/leds/omap3bug:blue:wifi/brightness"
+# Take a peek at x-loader make sure it wrote ok
+nanddump -n -o -l 9668 -f xldmp /dev/mtd0 >> memtest.errlog 2>&1
+dd if=xldmp of=x-loader bs=1 count=9668
+echo -e "abd9173af26ab5ea1983653ce49fe3cc  x-loader" > x-loader.md5
+# force a quick failure, uncomment to make it work
+# echo  "4bd9173af26ab5ea1983653ce49fe3cc  x-loader" > x-loader.md5
+md5sum -c x-loader.md5 >> memtest.errlog 2>&1
+if [ "$?" != "0" ]; then
+	echo 0 > "/sys/class/leds/omap3bug:green:battery/brightness"
+	echo heartbeat > "/sys/class/leds/omap3bug:red:battery/trigger"
+	error_collect
+fi
+
+for la in 1 2 3 4; do
+	echo starting nandtest on /dev/mtd${la} > memtest.errlog
+	tail -f memtest.errlog &
+	nandtest -k -p4 /dev/mtd${la} >> memtest.errlog 2>&1
+	if [ "$?" != "0" ]; then
+		echo 0 > "/sys/class/leds/omap3bug:green:battery/brightness"
+		echo heartbeat > "/sys/class/leds/omap3bug:red:battery/trigger"
+		error_collect
+	fi
+	echo erasing /dev/mtd${la}
+	flash_eraseall /dev/mtd${la}
+done
+# Yes, we are testing memory
+echo 0 > "/sys/class/leds/omap3bug:green:battery/brightness"
+echo 255 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+testcount=0
+errorcount=0
+while [ 1 ]; do
+	free > memtest.errlog
+	tail -f memtest.errlog &
+	((testcount++))
+	memtester 210 1 >> memtest.errlog 2>&1
+	if [ "$?" != "0" ]; then
+		echo 0 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+		echo heartbeat > "/sys/class/leds/omap3bug:red:wifi/trigger"
+		((errorcount++))
+		echo Test Count $testcount
+		echo Error Count $errorcount
+		error_collect
+	fi
+	echo heartbeat > "/sys/class/leds/omap3bug:green:wifi/trigger"
+	sleep 20
+	echo none > "/sys/class/leds/omap3bug:green:wifi/trigger"
+	echo 255 > "/sys/class/leds/omap3bug:green:wifi/brightness"
+done
+echo ""
+echo "Done!"

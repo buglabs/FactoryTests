@@ -1,0 +1,224 @@
+#!/bin/sh
+
+# comment_block() {
+#   ---------------------------------------------
+#   Common settings
+#   ---------------------------------------------
+HOSTNAME=PIM-PROGRAMMING
+VERSION=1.0
+
+hostname $HOSTNAME
+
+#   ---------------------------------------------
+#   Prints execution status.
+#
+#   arg1 : Execution status
+#   arg2 : Continue (0) or Abort (1) on error
+#   ---------------------------------------------
+status ()
+{
+	if [ $1 -eq 0 ] ; then
+		echo "[SUCCESS]"
+	else
+		echo "[FAILED]"
+
+		if [ $2 -eq 1 ] ; then
+			echo "... System init aborted."
+			exit 1
+		fi
+	fi
+
+}
+
+#   ---------------------------------------------
+#   Get verbose
+#   ---------------------------------------------
+echo ""
+echo "    System initialization..."
+echo ""
+echo "    Hostname       : $HOSTNAME"
+echo "    Filesystem     : v$VERSION"
+echo ""
+echo "    Kernel release : `uname -s` `uname -r`"
+echo "    Kernel version : `uname -v`"
+echo ""
+
+
+#   ---------------------------------------------
+#   MDEV Support
+#   (Requires sysfs support in the kernel)
+#   ---------------------------------------------
+echo -n " Mounting /proc             : "
+mount -n -t proc /proc /proc
+status $? 1
+
+echo -n " Mounting /sys              : "
+mount -n -t sysfs sysfs /sys
+status $? 1
+
+echo -n " Mounting /dev              : "
+mount -n -t tmpfs mdev /dev
+status $? 1
+
+echo -n " Mounting /dev/pts          : "
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts
+status $? 1
+
+echo -n " Enabling hot-plug          : "
+echo "/sbin/mdev" > /proc/sys/kernel/hotplug
+status $? 0
+
+echo -n " Populating /dev            : "
+#mkdir -p /dev/input
+#mkdir -p /dev/snd
+#mkdir -p /dev/shm
+/etc/init.d/udev start
+mdev -s
+status $? 0
+
+
+#   ---------------------------------------------
+#   Mount the default file systems
+#   ---------------------------------------------
+echo -n " Mounting other filesystems : "
+mount -a
+status $? 0
+umount /media/mm*
+
+#   ---------------------------------------------
+#   Set PATH
+#   ---------------------------------------------
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
+
+# end comment block}
+
+#   ---------------------------------------------
+#   Done!
+#   ---------------------------------------------
+echo ""
+echo "System initialization complete."
+
+#mount -t vfat /dev/mmcblk0p1 /mnt/mmc1
+#mount -t vfat /dev/mmcblk1p1 /mnt/mmc2
+
+#echo "----------------------------------------"
+#echo "    Making device nodes for EEPROMs"
+#mknod /dev/at24c_eeprom c 249 0
+#mknod /dev/at25_eeprom c 250 0
+#echo "----------------------------------------"
+#echo "          Disabling FB Timeout."
+#echo "----------------------------------------"
+#echo 0 > /sys/devices/platform/omapfb/sleep_timeout
+
+
+prompt()
+{
+	tvar=L
+	while [ "$tvar" != "y" ] &&
+		[ "$tvar" != "Y" ] &&
+		[ "$tvar" != "n" ] &&
+		[ "$tvar" != "N" ] &&
+		[ "$tvar" != "r" ] &&
+		[ "$tvar" != "R" ]; do
+
+	read -n1 tvar
+
+done
+export $1=$tvar
+}
+# main while loop
+while [ 1 ]
+do
+	echo ===========================================================
+	echo Select the module type you would like to program
+	echo
+	echo "1) Video Module"
+	echo "2) LCD Module"
+	echo "3) Camera Module"
+	echo 
+	echo ===========================================================
+	read modtype
+
+	if [ "$modtype" == "1" ]; then
+		modargs="1 0x01 0x0D"
+		slot=1
+	elif [ "$modtype" == "2" ]; then
+		modargs="1 0x01 0x03"
+		slot=1
+	elif [ "$modtype" == "3" ]; then
+		modargs="0 0x01 0x0F"
+		slot=0
+	else
+		continue
+	fi
+
+
+	while [ 1 ]
+	do
+
+		echo ============================================================
+		echo Place the next module into the slot for programming 
+		echo ============================================================
+		# wait for them to insert the module
+		while [ 1 ]
+		do
+			if [ ! -e /sys/class/bmi/bmi-${slot}/bmi-dev-${slot} ];  then
+				sleep 1;
+			else
+				break;
+			fi
+		done
+
+		#When you believe in things that you don't understand
+		#Then you suffer, Superstition ain't the way
+		# but we'll sleep for a second here anyway
+		sleep 1
+
+		# eeprom-update gets passed the slot number vendor and mod type
+		python /usr/bin/eeprom-update $modargs
+		ret=$?
+		if [ "$ret" == "2" ];then
+			echo ===========================================================
+			echo "                 eeprom programming failed!"
+			echo
+			echo The module might not be plugged in all the way. If this
+			echo continues, then reboot the bug and try programming again
+			echo
+			echo "                                    Press Enter to continue"
+			echo ===========================================================
+			read msg
+		elif [ "$ret" == "1" ];then
+			echo ===========================================================
+			echo  Argh, some stupid programming error happened. Call Grundy
+			echo ===========================================================
+			read msg
+			exit
+		fi
+		echo ============================================================
+		echo Module eeprom programming complete. Please remove the module
+		echo ============================================================
+		# wait for them to pull the module
+		while [ 1 ]
+		do
+			if [ -e /sys/class/bmi/bmi-${slot}/bmi-dev-${slot} ];  then
+				sleep 1;
+			else
+				break;
+			fi
+		done
+
+		
+#		echo ===========================================================
+#		echo " Do you want to program another module of this type? (y/n)"
+#		echo ===========================================================
+#		prompt user
+#		if [ "$user" = "y" ];then
+#			continue
+#		else
+#			break
+#		fi
+
+	done
+done
+

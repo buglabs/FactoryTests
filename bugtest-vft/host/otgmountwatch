@@ -1,0 +1,20 @@
+#!/bin/bash
+echo ===========================================================
+echo Starting the OTG mount watch process. This will create a 
+echo file on the OTG device for the verification test procedure
+echo to check. Please do not stop this process until you are 
+echo done with BugBase Verification Testing
+echo ===========================================================
+
+while [ 1 ]; do
+	for la in $(ls -1 /media/); do
+		if [ -d "/media/$la" ]; then
+			echo directory $la found
+			touch /media/$la/otgverify
+			dd if=/dev/zero of=/media/$la/otgverify bs=1M count=10
+			sync
+			umount /media/$la
+		fi
+	done
+	sleep 5
+done

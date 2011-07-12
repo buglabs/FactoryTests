@@ -1,0 +1,366 @@
+#!/usr/bin/env python
+
+"""
+
+	bugmacproc (c)2010 Bug Labs
+		Captures the dieid from the processor (as reported by u-boot)
+		checks and sees if it already exists in the database
+			if so, retrieve the mac address and program it into the bug
+			should also verify the serial numbers match at this point
+		if it isn't in the database, update the database with died and serial number
+		then retrieve again
+		setenv ethaddr macaddr through u-boot
+
+
+"""
+
+import serial
+import sys
+import os
+import re
+import signal
+import time
+import datetime
+import string
+import tty,fcntl, termios
+import optparse
+import sqlite3
+
+#
+# globals
+#
+# VERSION = "1.0"	# RedBoot
+VERSION = "1.1"		# U-Boot
+
+bug_serial_port = '/dev/ttyUSB1'
+logfile_name = "tmp_logfile"
+datafile_name = "location_datafile"
+logfile = 0
+datafile = 0
+interactive_error = 0
+ser_num = "noser"
+ee_date = ""
+mc = ""
+pc = ""
+pcm = ""
+ver = ""
+eth = ""
+macresult = 0
+newmac = None
+macwritten = False
+conflict = False
+interactive = True
+timed_out = False
+
+TIMEOUT10=10
+TIMEOUT20=20
+TIMEOUT30=30
+TIMEOUT40=40
+TIMEOUT50=50
+
+#
+# regular expressions
+#
+bug_prompt = re.compile(r"BUGBASE /]#")
+uboot_prompt = re.compile(r"BUGBASE2 #")
+uboot_autoboot = re.compile(r"Net")
+uboot_dieid = re.compile(r"dieid#")
+uboot_shutdown = re.compile(r"Writing to Nand")
+uboot_nomac = re.compile(r"Error:")
+
+#
+# subroutines
+#
+# write to log file and output to screen
+def log_output(l):
+	global logfile
+
+	print l
+	logfile.write("%s\n" % (l))
+
+	# log output until re object found
+
+
+def look_for(reo, termination=0):
+	global ser
+	global timed_out
+	global ping_ok
+	global button_ok
+	global error_string
+	global bug_ip_address
+
+	timeout = 0
+	done = False
+	timed_out = False
+	while True and not done:
+		l = ""
+		c = ""
+		while c != '\n' and not done:
+			c = ser.read(1)
+			if c != '\n':
+				l = l + c
+
+		# re termination
+		if reo.search(l):
+			done = True
+
+		# timeout termination
+#		if termination > 0:
+#			timeout = timeout + 1
+#			if timeout == termination:
+#				timed_out = True
+#				done = True
+
+		# print to log file
+		log_output(l)
+
+# look for reo1 or reo2
+def look_for_thisor(reo1, reo2, termination=0):
+	global ser
+	global timed_out
+	global ping_ok
+	global button_ok
+	global error_string
+	global bug_ip_address
+
+	timeout = 0
+	done = False
+	timed_out = False
+	while True and not done:
+		l = ""
+		c = ""
+		while c != '\n' and not done:
+			c = ser.read(1)
+			if c != '\n':
+				l = l + c
+
+		# re termination
+		if reo1.search(l):
+			# print "reo1\n"
+			done = True
+			retval = 1
+
+		# re termination
+		elif reo2.search(l):
+			# print "reo2\n"
+			done = True
+			retval = 2
+
+		# timeout termination
+#		if termination > 0:
+#			timeout = timeout + 1
+#			if timeout == termination:
+#				timed_out = True
+#				done = True
+
+		# print to log file
+		log_output(l)
+	return retval
+#
+# get value from reo
+#
+def look_for_val(reo):
+	global ser
+	global timed_out
+	global ping_ok
+	global button_ok
+	global error_string
+	global bug_ip_address
+
+	timeout = 0
+	done = False
+	timed_out = False
+	found = False
+	retval = ""
+	while not found and not done:
+		l = ""
+		c = ""
+		while c != '\n' and not done:
+			c = ser.read(1)
+			if c != '\n':
+				l = l + c
+
+		# print to log file
+		log_output(l)
+
+		# regex for item to return
+		if reo.search(l):
+			log_output(l)
+			return l
+
+def response_timeout(signum, frame):
+	pass
+
+#
+#	main()
+#
+
+parser = optparse.OptionParser(usage="""\
+	%prog [logfile] [port]
+	gather dieid set mac addr.""")
+
+parser.add_option("-l", "--log-file", dest="logfile",
+    help="name of logfile all session traffic will be written to",
+    default=None)
+
+parser.add_option("-p", "--port", dest="port",
+    help="port, a device name e.g. /dev/ttyUSB1",
+    default=None)
+(options, args) = parser.parse_args()
+
+if options.logfile is None:
+	print "\nERROR - MUST SPECIFY LOG FILE NAME \n"
+	sys.exit(-1)
+
+if options.port is None:
+	print "\nERROR - MUST SPECIFY SERIAL PORT NAME\n"
+	sys.exit(-1)
+
+# open serial port
+try:
+	ser = serial.Serial(options.port, baudrate=115200, bytesize=8, xonxoff=0, rtscts=0, timeout=1)	# open serial port with 1 second timeout
+except:
+	print "\nERROR - COULDN'T OPEN SERIAL PORT \n"
+	sys.exit(-1)
+
+#os.system("clear")
+print "\n\tBUG Base 2.0 Factory Verification Test\n"
+
+	# open log file
+try:
+	logfile = open(options.logfile, "a+")
+except:
+	print "\n>>>ERROR: Can't open %s for appending\n" % (logfile_name)
+	sys.exit(-1)
+
+#print "\n>>> Writing all output to log file %s" % (logfile_name)
+#ser_num = logfile_name	# save to put in EEPROM
+
+log_output("\nStarting BugBase 2.0 verification Tests\n")
+log_output("\n\toutput file = %s" % (logfile_name))
+log_output("\tdate = %s" % (datetime.datetime.now().ctime()))
+log_output("\tday = %d" % (time.localtime()[7]))
+log_output("\tweek = %d" % (time.localtime()[7] / 7))
+
+datestr = ("%s" % (datetime.datetime.now().ctime()))
+
+# calculate WWYY
+ee_date = "%02d%s" % (time.localtime()[7] / 7, str(datetime.date.today().year)[2:]) 
+
+#signal.signal(signal.SIGALRM, response_timeout)
+#signal.alarm(TIMEOUT50)
+conn = sqlite3.connect('buglabs.db')
+c = conn.cursor()
+
+
+print "\n===========================================================\n"
+print "Put the flash programming sd card into the base and press the\n"
+print "reset button on the dock......\n"
+print "===========================================================\n"
+
+try:
+#ablefo=True
+#while ablefo :
+
+	# send " \n" to stop U-Boot
+	#print "stopping u-boot\n"
+	ser.write("\n\n\n")
+	look_for(uboot_autoboot)
+	ser.write("\n\n\n")
+	# look for U-Boot prompt (BUGBoot>)
+	look_for(uboot_prompt)
+	# printenv
+	ser.write("printenv dieid#\n")
+	dieid=look_for_val(uboot_dieid)
+	dieid=look_for_val(uboot_dieid)
+	dieid=dieid.replace("dieid#=","")
+	dieid=dieid[:-1]
+	#print "DIE ID: --%s--\n" % dieid
+
+	print "\n\n\n===========================================================\n"
+	sys.stdout.write("enter the serial number for the board (default: %s): " % (ser_num))
+	print "\n===========================================================\n"
+	new_sernum = sys.stdin.readline()
+	if (new_sernum != "\n") and (new_sernum[0] in "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+		sernum = new_sernum[:-1]
+
+	while newmac is None:
+
+		t=(dieid,)
+		# print "finding mac\n"
+		c.execute('select macaddr,serial from bugbase2 where dieid=?', t)
+		for count in c:
+		#	print count
+			newmac = count[0]
+			new_sernum = count[1]
+			# Put in serialnumber conflict resolution here
+			#but for now just hamfist it out
+			if (sernum != new_sernum):
+				print "\n\n\n===========================================================\n"
+				print "Serial number %s does not match number on file %s\n" % (sernum, new_sernum)
+				print "You have the following options:\n"
+				print " 1) Update the number on file with Serial number %s \n" % (new_sernum)
+				print " 2) The number on file is the correct Serial number (%s) \n" % (sernum)
+				print " 3) Enter a different Serial number \n"
+				print "\n===========================================================\n"
+				choice = "0"
+				while choice[0] not in "123":
+					choice = sys.stdin.readline()
+					choice = choice[:-1]
+				if choice == "1":
+					#fix this update code please
+					t=(serial,dieid)
+					c.execute('update bugbase2 set serial=? where dieid=?', t)
+					continue
+				elif choice == "2":
+					sernum = new_sernum
+				elif choice == "3":
+					new_sernum = ""
+					while (new_sernum != "\n") and (new_sernum[0] not in "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+						print "Enter the new serial number:\n"
+						new_sernum = sys.stdin.readline()
+					sernum = new_sernum[:-1]
+
+		if newmac is None:
+		#	print "assigning mac\n"
+			t=(dieid, sernum);
+		#	print t
+			c.execute('insert into bugbase2 (dieid,serial) values (?,?)', t)
+			conn.commit()
+	sAddr =  "%012X"  % (newmac)
+	blocks = [sAddr[x:x+2] for x in xrange(0, len(sAddr), 2)]
+	macFormatted = ':'.join(blocks)
+	# print "%s" % macFormatted
+
+		
+
+	ser.write("\n")
+	look_for(uboot_prompt)
+
+	while macwritten is not True:
+		ser.write("setenv ethaddr %s\n" % macFormatted)
+		look_for(uboot_prompt)
+		os.system("sleep 1")
+		uboot_mac = re.compile(r"ethaddr=%s" % macFormatted)
+		ser.write("printenv ethaddr\n")
+		macresult=look_for_thisor(uboot_nomac, uboot_mac)
+		# print "macresult %d\n" % macresult
+		if  macresult == 2:
+			# print "mac set properly"
+			macwritten=True
+	ser.write("run bootcmd\n")
+	look_for(uboot_shutdown)
+#	ablefo=False
+except:
+	log_output("\t>>> Unexpected failure during mac programming <<<\n")
+	interactive_error = interactive_error + 1
+	sys.exit(-1)
+
+signal.signal(signal.SIGALRM, signal.SIG_IGN)
+
+logfile.close()
+
+
+
+os.system("mv %s logs/%s.%s.%s%d" % (options.logfile, ser_num,dieid,ee_date,time.localtime()[7]))
+sys.exit(0)

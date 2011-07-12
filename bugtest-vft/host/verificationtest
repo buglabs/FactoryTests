@@ -1,0 +1,81 @@
+#!/bin/bash
+
+prompt()
+{
+	tvar=L
+	while [ "$tvar" != "y" ] &&
+	        [ "$tvar" != "Y" ] &&
+	        [ "$tvar" != "n" ] &&
+	        [ "$tvar" != "N" ] &&
+	        [ "$tvar" != "r" ] &&
+	        [ "$tvar" != "R" ]; do
+
+	        read -n1 tvar
+
+	done
+	export $1=$tvar
+}
+# main while loop
+	while [ 1 ]
+	do
+		echo ===========================================================
+		echo Plug the Base into the test fixture.
+		echo Attach the blue Samtec cables to the top of the Base.
+		echo Put the verification SD card in the slot away from you
+		echo put a scratch SD card in the slot facing you
+		echo Plug in the Dock, USB OTG, and Audio Cables
+		echo
+		echo                                     Press Enter to continue
+		echo ===========================================================
+		read msg
+		# create temporary logfile, everything goes there until we get
+		# the dieid and serial number
+		temp_logfile=$(tempfile)
+
+		# bugtestmon launches bugtest.sh and records the early boot process
+		# $1 is the ttyUSB number, just the number
+		python bugtestmon -l $temp_logfile -p /dev/ttyUSB$1
+		if [ "$?" != "0" ];then
+			echo ===========================================================
+			echo bugtestmon failed, please check error messages and restart
+			echo test log is stored in $temp_logfile
+			echo                                     Press Enter to continue
+			echo ===========================================================
+			read msg
+			break
+			fi
+		# Launch miniterm to go interactive with the test script
+		python miniterm.py -p /dev/ttyUSB$1 -b 115200 | tee -a $temp_logfile
+
+		if [ "$?" != "0" ];then
+			echo ===========================================================
+			echo bugtestmon failed, please check error messages and restart
+			echo test log is stored in $temp_logfile
+			echo                                     Press Enter to continue
+			echo ===========================================================
+			read msg
+			break
+			fi
+
+		python bugmacprog -l $temp_logfile -p /dev/ttyUSB$1
+		if [ "$?" != "0" ];then
+			echo ===========================================================
+			echo bugmacprog failed, please check error messages and restart
+			echo test log is stored in $temp_logfile
+			echo                                     Press Enter to continue
+			echo ===========================================================
+			read msg
+			break
+			fi
+
+		echo ===========================================================
+		echo "Do you want to test another board? (y/n)"
+		echo ===========================================================
+		prompt user
+		if [ $user = "y" ];then
+			continue
+		else
+			break
+		fi
+	done
+
